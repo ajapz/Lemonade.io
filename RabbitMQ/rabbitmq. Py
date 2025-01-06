@@ -1,0 +1,74 @@
+import requests
+from prometheus_client import start_http_server, Gauge
+import time
+import schedule
+import os
+
+# Load configuration from environment variables
+RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
+RABBITMQ_PORT = os.getenv("RABBITMQ_PORT", "15672")
+RABBITMQ_USER = os.getenv("RABBITMQ_USER", "guest")
+RABBITMQ_PASSWORD = os.getenv("RABBITMQ_PASSWORD", "guest")
+RABBITMQ_API_URL = f"http://{RABBITMQ_HOST}:{RABBITMQ_PORT}/api/queues"
+
+# Prometheus metrics with labels
+INDIVIDUAL_QUEUE_MESSAGES = Gauge(
+    "rabbitmq_individual_queue_messages",
+    "Total number of messages in the queue",
+    ["host", "vhost", "name"]
+)
+INDIVIDUAL_QUEUE_MESSAGES_READY = Gauge(
+    "rabbitmq_individual_queue_messages_ready",
+    "Number of messages ready for delivery in the queue",
+    ["host", "vhost", "name"]
+)
+INDIVIDUAL_QUEUE_MESSAGES_UNACKNOWLEDGED = Gauge(
+    "rabbitmq_individual_queue_messages_unacknowledged",
+    "Number of unacknowledged messages in the queue",
+    ["host", "vhost", "name"]
+)
+
+def fetch_individual_queue_metrics():
+    """
+    Fetch individual queue metrics from RabbitMQ HTTP API and update Prometheus metrics.
+    """
+    try:
+        # Authenticate and fetch queue data
+        response = requests.get(RABBITMQ_API_URL, auth=(RABBITMQ_USER, RABBITMQ_PASSWORD))
+        response.raise_for_status()
+        queues = response.json()
+
+        # Update Prometheus metrics for each queue
+        for queue in queues:
+            vhost = queue["vhost"]
+            queue_name = queue["name"]
+            messages = queue.get("messages", 0)
+            messages_ready = queue.get("messages_ready", 0)
+            messages_unacknowledged = queue.get("messages_unacknowledged", 0)
+
+            # Set metrics with labels
+            INDIVIDUAL_QUEUE_MESSAGES.labels(host=RABBITMQ_HOST, vhost=vhost, name=queue_name).set(messages)
+            INDIVIDUAL_QUEUE_MESSAGES_READY.labels(host=RABBITMQ_HOST, vhost=vhost, name=queue_name).set(messages_ready)
+            INDIVIDUAL_QUEUE_MESSAGES_UNACKNOWLEDGED.labels(host=RABBITMQ_HOST, vhost=vhost, name=queue_name).set(messages_unacknowledged)
+
+    except Exception as e:
+        print(f"Error fetching individual queue metrics: {e}")
+
+def run_exporter():
+    """
+    Start the Prometheus exporter and periodically fetch metrics.
+    """
+    # Start Prometheus HTTP server
+    start_http_server(8000)
+    print(f"Prometheus exporter started on port 8000 for RabbitMQ host: {RABBITMQ_HOST}")
+
+    # Schedule periodic metric updates
+    schedule.every(10).seconds.do(fetch_individual_queue_metrics)
+
+    # Run the scheduler
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+if __name__ == "__main__":
+    run_exporter()
